@@ -11,6 +11,7 @@ Vtundfix needs to be installed on both the Vtund server and client machines. Dow
 ##Configuration
 Vtundfix configuration. Here are the contents of the template file:
 > cat /etc/vtundfix.conf
+
 <pre>
 DIRECTORY /usr/local/vtundfix/
 DELAY_BETWEENCHECK 300
@@ -135,7 +136,7 @@ This will turn off checking on **both** the Vtund server and client machines. To
 
 Vtundctl merges the commands for Vtund and Vtundfix, along with their init script commands.
 Here is an example of calling a command for **Vtund** through Vtundctl and what it does:
-> vtundctl vtund lcsr 192.168.1.100     - start Vtund client process that will attempt to connect to Vtund server
+> vtundctl vtund lcsr 192.168.1.100  # *start Vtund client process that will attempt to connect to Vtund server*
 
 ##Inside Vtundfix (How it works)
 This section will cover how Vtundfix works on the inside incase changes need to be made or something weird is happening.
