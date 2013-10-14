@@ -1,0 +1,918 @@
+#!/bin/bash
+
+# 2 bridges: br0, br1
+# 2 taps: tap0, tap1
+# ASSUMPTIONS:
+# Have root access
+# root /usr/bin/ssh access without password
+# both have equivalent tap interface names, ex: tap0, tap1
+
+PROG="vtundfix"
+DIR="/usr/local/vtundfix/" # initial directory
+VAR_DIR="/var/vtundfix/" # directory for data files
+CONF_FILE="${DIR}vtundfix.conf" # always in this directory, also downloaded here
+DATA_FILE_PREFIX="${VAR_DIR}data_"
+
+
+function howmany { /bin/echo $#; }
+
+function printHelp
+{
+	/bin/echo "${0} Usage:"
+	/bin/echo "${0} <on|off> [SCOPE]"
+	/bin/echo "${0} <on|off> <tap interface|vlan> [SCOPE]"
+	/bin/echo "${0} <on|off> <tap interface|vlan> <SCOPE> [INTERFACE]"
+	/bin/echo "${0} -h, --help"
+	/bin/echo "For more detailed information on usage, check \`man ${PROG}\`"
+}
+
+function getData # Get single data from data file. <row> <column> are the parameters, row is either 2 or 5 or 9
+{
+	/bin/echo `/bin/sed -n "${1}{p;q}" "${data_file}" | /bin/awk '{print $'"${2}"'}'`
+}
+
+function triggerAction # $switch $tap $scope $interface $ip
+{
+	data_file="${DATA_FILE_PREFIX}${2}"
+	trigger_ip="${5}"
+	switch=0; 
+	if [[ "${1}" == "on" ]]; then 
+		switch=1
+	fi
+
+	if [[ "${3}" == "both" || "${3}" == "remote" ]]; then
+		# Send trigger to other machine, but have it a local trigger
+		if [[ "${MACHINE}" == "client" && "${4}" == "tap" ]]; then
+			/bin/echo "Ignoring tap on server."
+		elif [[ "${MACHINE}" == "server" && "${4}" == "listener" ]]; then
+			/bin/echo "Ignoring listener on client."
+		else
+			/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${trigger_ip}\" \"${DIR}${PROG}\" \"${1}\" \"${2}\" local \"${4}\" < /dev/null"
+			if [[ $? -gt 0 ]]; then
+			    return 1
+			fi
+		fi
+	    if [[ "${3}" == "remote" ]]; then 
+			return 0 # If "remote", return here. If it was "both", continue
+		fi
+	fi
+	if [[ "${3}" == "both" || "${3}" == "local" ]]; then
+		# Act on trigger locally
+	    if [[ "${MACHINE}" == "client" && "${4}" == "listener" ]]; then
+	        /bin/echo "Ignoring listener on client"
+	    elif [[ "${MACHINE}" == "server" && "${4}" == "tap" ]]; then
+	        /bin/echo "Ignoring tap on server"
+	    else
+	        col=0 # default, start/stop all
+			case "${4}" in
+	          service)
+	            col=1
+	            ;;
+	          vlan)
+	            col=2
+	            ;;
+	          br|bridge)
+	            col=3
+	            ;;
+	          tap|listener)
+	            col=4
+	            ;;
+	          all)
+	            ;;
+	          *)
+	            /bin/echo "ERROR, ${4} is not a valid interface."
+	            return 1
+	            ;;
+	        esac
+	        switchesline=`/usr/bin/tail -n 1 "${data_file}"`
+	        i=1
+			before="" # need these to reset, runs multiple times
+			after=""
+			# Construct updated switches line in the data file
+	        for val in ${switchesline}; do
+	            if [[ ${col} -eq 0 ]]; then
+	                before="${before}${switch} "
+	            elif [[ ${i} < ${col} ]]; then
+	                before="${before}${val} "
+	            elif [[ ${i} > ${col} ]]; then 
+	                after="${after}${val} "
+	            fi
+	            i=$((${i}+1))
+	        done
+			# Update data file
+	        if [[ ${col} -eq 0 ]]; then
+	            /bin/sed -e "9s/^.*$/${before}/" -i "${data_file}"
+	        else
+	            /bin/sed -e "9s/^.*$/${before}${switch} ${after}/" -i "${data_file}"
+	        fi
+	    fi
+		return 0
+	fi
+	return 1
+}
+
+function trigger
+{
+# TRIGGER PORTION #
+# ${1} off | on
+# ${2} scope | tap<#> | <vlan #>
+# ${3} local | remote | both
+# ${4} tap | vlan | br | bridge | listener | all | service
+
+	interface="all" # default
+	scope="both" # default
+	useTap=1 # if 0, use vlan
+	affect="specific" # can be either specific or all, script will alter either specific interface or all interfaces
+
+    # Determine if value of affect should be "all"
+    if [[ $# -eq 1 || ( $# -eq 2 && ( "${2}" == "both" || "${2}" == "local" || "${2}" == "remote" ) ) ]]; then
+        affect="all"
+    fi
+
+    # TWO SECTIONS, ONE=on/off, TWO=on-spec/off-spec
+    # SECTION ONE - affect=all. Perform on all tap interfaces, so break it up into singles and execute the triggerAction function for each
+    anyFailures=0
+
+    # if 2 arguments, $2 is either a scope to alter all TAP interfaces or $2 is a specific TAP/VLAN interface, depending on "affect" variable
+    if [[ $# -eq 2 && "${affect}" == "all" ]]; then
+         scope="${2}"
+    fi
+
+    if [[ "${affect}" == "all" ]]; then
+		# For each tap interface in CONF_FILE, execute the action and report result
+        while read line; do
+			tap=`/bin/echo "${line}" | /bin/awk '{print $1}'`
+			if [[ "${MACHINE}" == "server" ]]; then
+				remoteIP=`/bin/echo "${line}" | /bin/awk '{print $3}'`
+			else
+				remoteIP="${VTUND_SERVER}"
+			fi
+            /bin/echo -n "${tap}: "
+            triggerAction "${1}" "${tap}" "${scope}" "${interface}" "${remoteIP}"
+            if [[ $? -eq 0 ]]; then
+                /bin/echo "Success!" 
+            else
+                /bin/echo "FAILED!"
+                anyFailures=1
+            fi
+        done < <(/bin/grep '^tap' "${CONF_FILE}")
+
+	    return ${anyFailures}
+	fi
+
+	# SECTION TWO - affect=specific
+	if [[ $# -eq 4 ]]; then # both interface switch and scope specified, replace defaults
+	    interface="${4}"
+	    scope="${3}"
+	elif [[ $# -eq 3 ]]; then # scope specified, replace default
+	    scope="${3}"
+    elif [[ $# -lt 2 ]]; then
+		printHelp
+		exit 1
+	fi
+	vlan="${2}"
+	tap="${2}"
+	# Check if user specified TAP or VLAN interface. Make sure user input is valid
+	if [[ `expr match "${tap}" 'tap'` -eq 3 && ${#tap} -gt 3 ]]; then
+	    confline=`/bin/grep '^'"${tap} " "${CONF_FILE}"`
+	    if [[ $? -gt 0 ]]; then
+	        /bin/echo "${tap} was not found in ${CONF_FILE} : FAILED"
+	        return 2
+	    fi
+	else
+	    useTap=0
+	    if [[ `expr match "${vlan}" 'vlan'` -eq 4 ]]; then 
+			vlan=${vlan:4}
+		fi
+	    confline=`/bin/grep "${vlan}"'$' "${CONF_FILE}"`
+	    if [[ $? -gt 0 ]]; then
+	        /bin/echo "VLAN ${vlan} was not found in ${CONF_FILE} : FAILED"
+	        return 2
+	    fi
+	    tap=`/bin/echo "${confline}" | /bin/awk '{print $1}'`
+	fi
+
+	if [[ "${MACHINE}" == "server" ]]; then
+		remoteIP=`/bin/echo "${confline}" | /bin/awk '{print $3}'`
+	else
+		remoteIP="${VTUND_SERVER}"
+	fi
+	triggerAction "${1}" "${tap}" "${scope}" "${interface}" "${remoteIP}"
+	return $?
+}
+
+
+# Initialize data file 
+function _init
+{
+	/bin/echo "prev_c_tx    prev_c_rx    prev_s_tx    prev_s_rx" > "${data_file}"
+	/bin/echo "0 0 0 0" >> "${data_file}"
+	/bin/echo "" >> "${data_file}"
+	/bin/echo "prev_vlan_tx    prev_vlan_rx" >> "${data_file}"
+	/bin/echo "0 0" >> "${data_file}"
+	/bin/echo "" >> "${data_file}"
+	/bin/echo "Switches, 1=on 0=off" >> "${data_file}"
+	/bin/echo "SERVICE   vlan   br    tap|listener" >> "${data_file}"
+	/bin/echo "1 1 1 1" >> "${data_file}"
+	chown "${USER}:${USER}" "${data_file}"
+	chown "${USER}:${USER}" "${VAR_DIR}"
+}
+
+# Return true/false if an interface should be checked
+function checkTrue
+{	
+	if [[ ! $# -eq 1 ]]; then
+		log "A fatal error has occured when calling the checkTrue function. There should be only 1 argument and it must be a type of interface. Examples: tap, vlan, br, listener, service"
+		exit 1
+	fi
+	col=0
+	case "${1}" in 
+	  service)
+		col=1
+		;;
+	  vlan)
+		col=2
+		;;
+	  br|bridge)
+		col=3
+		;;
+	  tap|listener)
+		col=4
+		;;
+      *)
+        log "FATAL ERROR: Invalid argument (${1}) passed to checkTrue function."
+        exit 1
+        ;;
+	esac
+	/bin/echo `getData 9 "${col}"`
+	return 0
+}
+
+function setBridgePrevToCur # $vlan_tx $vlan_rx $tap_tx $tap_rx
+{ 
+	if [[ $# -eq 0 ]]; then
+		vlan_rx=`/bin/grep "${vlan}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+		vlan_tx=`/bin/grep "${vlan}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+		/bin/sed -e "5s/^.*$/${vlan_tx} ${vlan_rx}/" -i "${data_file}"
+#		if [[ "${MACHINE}" == "server" ]]; then
+#			tap_rx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+#	        tap_tx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+#	        /bin/sed -e "2s/^.*$/0 0 ${tap_tx} ${tap_rx}/" -i "${data_file}"
+#		fi
+	else
+		/bin/sed -e "5s/^.*$/${1} ${2}/" -i "${data_file}"
+#		if [[ "${MACHINE}" == "server" ]]; then
+#			/bin/sed -e "2s/^.*$/0 0 ${3} ${4}/" -i "${data_file}"
+#		fi
+	fi
+}
+
+function setTapPrevToCur # $c_tap_tx $c_tap_rx $s_tap_tx $s_tap_rx
+{
+	# If no arguments passed, get all the data needed to update data file. Called on initial run or when vtund process started/restarted
+	if [[ $# -eq 0 ]]; then
+		c_tap_rx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+		c_tap_tx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+		
+		# Attempt to get tap RX/TX numbers from server. 
+		line_s_tap=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${VTUND_SERVER}\" /bin/grep \"${tap}:\" /proc/net/dev"`
+		if [[ $? -gt 0 ]]; then
+			log "`/bin/date`   -   Unable to ssh into ${VTUND_SERVER}, trying again in 120 seconds."
+			/bin/sleep 120
+			line_s_tap=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${VTUND_SERVER}\" /bin/grep \"${tap}:\" /proc/net/dev"`
+			if [[ $? -gt 0 ]]; then
+				return 2
+			fi
+		fi
+		s_tap_rx=`/bin/echo "${line_s_tap}" | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+		s_tap_tx=`/bin/echo "${line_s_tap}" | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+		/bin/sed -e "2s/^.*$/${c_tap_tx} ${c_tap_rx} ${s_tap_tx} ${s_tap_rx}/" -i "${data_file}"
+	else	
+		/bin/sed -e "2s/^.*$/${1} ${2} ${3} ${4}/" -i "${data_file}"
+	fi
+	return 0
+}
+
+function log # MESSAGE [email]  - email triggers to send email
+{
+	/bin/echo "${1}" >> "${VAR_DIR}vtundfix.log"
+ 	if [[ "${MACHINE}" == "client" && $# -eq 2 ]]; then
+		/bin/mail -s "${1}" "${EMAIL}" <<EOF
+"${1}"
+This is an automated message sent by the vtundfix script.
+EOF
+	fi 
+}
+
+function resetTap
+{
+	# Check if vtund process is running, if not start it
+	tapline=`/bin/ps -ef | /bin/grep vtund | /bin/grep "${tap_name} ether ${tap}"`
+	if [[ $? -gt 0 ]]; then
+		tapLine=`/bin/ps -ef | /bin/grep vtund | /bin/grep "${tap_name} closing"`
+		if [[ $? -gt 0 ]]; then
+			/usr/sbin/vtund "${tap_name}" "${VTUND_SERVER}" > /dev/null
+			/bin/sleep 5
+			setTapPrevToCur
+			return 0
+		fi
+	fi
+	
+	# Get PID of current vtund process and restart it
+	tapPID=`/bin/echo "${tapline}" | /bin/awk '{print $2}'`
+	if [[ ! -z ${tapPID} ]]; then
+		/bin/kill -9 "${tapPID}" > /dev/null
+	fi
+	/usr/sbin/vtund "${tap_name}" "${VTUND_SERVER}" > /dev/null
+	/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${VTUND_SERVER}\" \"${DIR}${PROG}\" resetTapNumbers \"${tap}\" < /dev/null"
+	/bin/sleep 5
+	setTapPrevToCur
+}
+
+function resetVlan
+{
+	/sbin/ifdown "${vlan}" > /dev/null
+	/sbin/ifup "${vlan}" > /dev/null
+	/bin/sed -e "5s/^.*$/0 0/" -i "${data_file}"
+}
+
+function vlanExists
+{ 
+	# Split an example eth0.763 into e=eth0, v=763
+	e=`/bin/echo "${vlan}" | /bin/awk -F . '{print $1}'`
+	v=`/bin/echo "${vlan}" | /bin/awk -F . '{print $2}'`
+	vlanline=`/sbin/ip link show "${vlan}"` # check if interface exists
+	if [[ $? -gt 0 ]]; then 
+		return 1
+	fi
+	/bin/echo "${vlanline}" | /bin/grep 'BROADCAST,MULTICAST,UP,LOWER_UP' > /dev/null # check if interface is up
+	if [[ $? -gt 0 ]]; then 
+		return 1
+	fi
+	/bin/egrep "${vlan} +\| +${v} +\| +${e}" /proc/net/vlan/config > /dev/null # check if vlan connected interface
+	return $?
+}
+
+function resetBridge
+{
+	/sbin/ip link set "${br}" down > /dev/null
+	/usr/sbin/brctl delbr "${br}" > /dev/null
+	/usr/sbin/brctl addbr "${br}" > /dev/null
+	/usr/sbin/brctl addif "${br}" "${vlan}" > /dev/null
+	/usr/sbin/brctl addif "${br}" "${tap}" > /dev/null
+
+	#weird, doesn't always bring up the interface on the first attempt. Actually requires multiple...
+	for i in {1..20}; do
+		/sbin/ip link set "${br}" up > /dev/null
+		/bin/sleep 0.2
+	done
+	/sbin/sysctl net.ipv4.ip_forward=1 > /dev/null
+	/bin/sleep 5
+	setBridgePrevToCur
+}
+
+function bridgeExists
+{
+	brline=`/sbin/ip link show "${br}"` # check if interface exists
+    if [[ $? -gt 0 ]]; then 
+		return 1
+	fi
+    /bin/echo "${brline}" | /bin/grep 'BROADCAST,MULTICAST,UP,LOWER_UP' > /dev/null # check if interface is up
+    if [[ $? -gt 0 ]]; then # if interface not up, bring it up
+		/sbin/ifconfig "${br}" up > /dev/null
+		/bin/sleep 30
+	fi
+
+	# Check if bridges both tap and vlan interfaces, order doesn't matter
+	tap_ctl=`/usr/sbin/brctl show | /bin/grep -E -e "${br}[^0-9]" | /bin/awk '{print $4}'`
+	if [[ $? -gt 0 ]]; then 
+		return 1
+	fi
+	tap_ctl2=`/usr/sbin/brctl show | /bin/grep -A 1 -E -e "${br}[^0-9]" | /usr/bin/tail -n 1 | /bin/awk '{print $1}'`
+	t=0; v=0 # exist flags
+	if [[ "${tap_ctl}" == "${tap}" ]]; then
+		t=1
+		if [[ "${tap_ctl2}" == "${vlan}" ]]; then 
+			v=1
+		fi
+	elif [[ "${tap_ctl}" == "${vlan}" ]]; then
+		v=1
+		if [[ "${tap_ctl2}" == "${tap}" ]]; then 
+			t=1
+		fi
+	fi
+
+	if [[ ${t} -eq 1 && ${v} -eq 1 ]]; then 
+		return 0
+	else 
+		return 1
+	fi
+}
+
+function bridgeWorking
+{
+
+	# Gather current and previous data to compare
+	vlan_rx=`/bin/grep "${vlan}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+	vlan_tx=`/bin/grep "${vlan}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+#	tap_rx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+#	tap_tx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+	prev_vlan_tx=`getData 5 1`
+	prev_vlan_rx=`getData 5 2`
+#	if [[ "${MACHINE}" == "server" ]]; then
+#		prev_tap_tx=`getData 2 3`
+#	    prev_tap_rx=`getData 2 4`
+#	else
+#		prev_tap_tx=`getData 2 1`
+#		prev_tap_rx=`getData 2 2`
+#	fi
+
+	# Both need to fail in order to show bridge is not working
+	# if vlan RX goes up, then tap TX needs to go up
+	if [[ ${vlan_rx} -gt ${prev_vlan_rx} && ${tap_tx} -gt ${prev_tap_tx} ]]; then
+		setBridgePrevToCur "${vlan_tx}" "${vlan_rx}" "${tap_tx}" "${tap_rx}"
+		return 0
+	fi
+	# if tap RX goes up, then vlan TX needs to go up
+	if [[ ${tap_rx} -gt ${prev_tap_rx} && ${vlan_tx} -gt ${prev_vlan_tx} ]]; then
+		setBridgePrevToCur "${vlan_tx}" "${vlan_rx}" "${tap_tx}" "${tap_rx}"
+		return 0
+	fi
+
+	return 1
+}
+
+function tapExists #add an argument to check if Server's tap exists
+{
+	ret=1
+	if [[ $# -eq 1 ]]; then # given arg, so check remote machines tap interface, either server or client
+		if [[ "${1}" == "client" ]]; then
+			tapExists_IP="${tap_client_ip}"
+		else
+			tapExists_IP="${VTUND_SERVER}"
+		fi
+			
+		/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /bin/echo hi > /dev/null < /dev/null"
+	    if [[ $? -gt 0 ]]; then
+		    log "`/bin/date`   - (${tap})  Unable to ssh into ${tapExists_IP}, trying again in 120 seconds."
+		    /bin/sleep 120
+			/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /bin/echo hi > /dev/null < /dev/null"
+		    if [[ $? -gt 0 ]]; then
+			    return 2
+		    fi
+		fi
+		tapline=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /sbin/ip link show \"${tap}\""` # check if interface exists
+	    if [[ $? -gt 0 ]]; then 
+			return 1
+		fi
+	    /bin/echo "${tapline}" | /bin/grep 'BROADCAST,MULTICAST,UP,LOWER_UP' > /dev/null # check if interface up
+	    if [[ $? -gt 0 ]]; then
+	        /bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /sbin/ifconfig \"${tap}\" up < /dev/null" # if not up, bring it up
+	        /bin/sleep 30
+	    fi
+		return 0
+	else
+		tapline=`/sbin/ip link show "${tap}"` #check if interface exists
+	    if [[ $? -gt 0 ]]; then 
+			return 1
+		fi
+	    /bin/echo "${tapline}" | /bin/grep 'BROADCAST,MULTICAST,UP,LOWER_UP' > /dev/null # check if interface up
+	    if [[ $? -gt 0 ]]; then
+	        /sbin/ifconfig "${tap}" up > /dev/null # if not up, bring it up
+	        /bin/sleep 30
+	    fi
+		return 0
+	fi
+	return 1
+}
+
+function tapWorking
+{
+	#tapExists_IP
+	
+	# check if tap interface exists on remote machine
+	if [[ "${MACHINE}" == "client" ]]; then
+		tapExists server 
+		ret=$?
+	else
+		tapExists client 
+		ret=$?
+	fi
+	if [[ ${ret} -gt 0 ]]; then
+		return ${ret}
+	fi
+	
+	########### C is local, S is remote
+
+	# Gather current data from both server and client
+	c_tap_rx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+	c_tap_tx=`/bin/grep "${tap}:" /proc/net/dev | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+	line_s_tap=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /bin/grep \"${tap}:\" /proc/net/dev"`
+	if [[ $? -gt 0 ]]; then
+		log "`/bin/date`   -   Unable to ssh into ${tapExists_IP}, trying again in 120 seconds."
+        /bin/sleep 120
+		line_s_tap=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${tapExists_IP}\" /bin/grep \"${tap}:\" /proc/net/dev"`
+        if [[ $? -gt 0 ]]; then
+            return 2
+        fi
+    fi
+	s_tap_rx=`/bin/echo "${line_s_tap}" | /bin/awk -F : '{print $2}' | /bin/awk '{print $2}'`
+	s_tap_tx=`/bin/echo "${line_s_tap}" | /bin/awk -F : '{print $2}' | /bin/awk '{print $10}'`
+	
+	# Gather previous data stored on file	
+
+	if [[ "${MACHINE}" == "client" ]]; then
+		# if client
+		prev_c_tap_tx=`getData 2 1`
+		prev_c_tap_rx=`getData 2 2`
+		prev_s_tap_tx=`getData 2 3`
+		prev_s_tap_rx=`getData 2 4`
+	else
+		# if server
+		prev_c_tap_tx=`getData 2 3`
+		prev_c_tap_rx=`getData 2 4`
+		prev_s_tap_tx=`getData 2 1`
+		prev_s_tap_rx=`getData 2 2`
+	fi
+		
+	# NEED THIS FOR BRIDGE CHECKS since because of change, bridge is now checked after.
+	tap_tx="${c_tap_tx}"
+	tap_rx="${c_tap_rx}"
+	prev_tap_tx="${prev_c_tap_tx}"
+	prev_tap_rx="${prev_c_tap_rx}"
+
+	# one needs to fail to restart the tunnel.
+	# if client TX goes up, server RX needs to go up
+	# if server TX goes up, client RX needs to go up
+#	if [[ ${c_tap_tx} -gt ${prev_c_tap_tx} && ${s_tap_rx} -gt ${prev_s_tap_rx} && ${s_tap_tx} -gt ${prev_s_tap_tx} && ${c_tap_rx} -gt ${prev_c_tap_rx} ]]
+#	then
+#		if [[ "${MACHINE}" == "client" ]]; then
+#			setTapPrevToCur "${c_tap_tx}" "${c_tap_rx}" "${s_tap_tx}" "${s_tap_rx}"
+#		else
+#			setTapPrevToCur "${s_tap_tx}" "${s_tap_rx}" "${c_tap_tx}" "${c_tap_rx}"
+#		fi
+#		return 0
+#	fi
+
+	# Both need to fail in order to show tunnel is not working
+	if [[ ${c_tap_tx} -gt ${prev_c_tap_tx} && ${s_tap_rx} -gt ${prev_s_tap_rx} ]]; then
+		if [[ "${MACHINE}" == "client" ]]; then
+			setTapPrevToCur "${c_tap_tx}" "${c_tap_rx}" "${s_tap_tx}" "${s_tap_rx}"
+		else
+			setTapPrevToCur "${s_tap_tx}" "${s_tap_rx}" "${c_tap_tx}" "${c_tap_rx}"
+		fi
+		return 0
+	fi
+	if [[ ${s_tap_tx} -gt ${prev_s_tap_tx} && ${c_tap_rx} -gt ${prev_c_tap_rx} ]]; then
+		if [[ "${MACHINE}" == "client" ]]; then
+			setTapPrevToCur "${c_tap_tx}" "${c_tap_rx}" "${s_tap_tx}" "${s_tap_rx}"
+		else
+			setTapPrevToCur "${s_tap_tx}" "${s_tap_rx}" "${c_tap_tx}" "${c_tap_rx}"
+		fi
+		return 0
+	fi
+	return 1
+}
+
+# Remove duplicate instances of the same vtund connection
+# They will keep fighting for the connection because of the "killold" option in vtund 
+function removeDuplicateRunning
+{
+	numRunning=`/bin/ps -ef | /bin/grep vtund | /bin/grep -c "vtund\[c\]: ${tap_name} "`
+	if [[ ${numRunning} -gt 1 ]]; then
+		log "(${tap}) Removing duplicate client."
+		proctokill=`/bin/ps -ef | /bin/grep vtund | /bin/grep "vtund\[c\]: ${tap_name} " | /usr/bin/head -n 1 | /bin/awk '{print $2}'`
+		/bin/kill -9 "${proctokill}" > /dev/null
+		/bin/sleep 10
+		removeDuplicateRunning # call self to keep removing extras
+		return 0
+	fi
+	return 0
+}
+
+# Check if the vtund process is running, also call to remove duplicates
+function isVtundProcessRunning
+{
+	removeDuplicateRunning
+	/bin/ps -ef | /bin/grep vtund | /bin/grep "${tap_name} ether ${tap}" > /dev/null
+	if [[ $? -gt 0 ]]; then 
+		return 1
+	else 
+		return 0
+	fi
+}
+
+# Check if the vtund listener process is running
+function isListening
+{
+    /bin/ps -ef | /bin/grep "vtund\[s\]: waiting for connections on port" > /dev/null
+    if [[ $? -eq 0 ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Returns 0 or 1 if client can perform checks based on server's response, 1=true, 0=false
+# Prevents client from trying to restart tap interface if the server turns them off on purpose
+function canCheckServer
+{
+	val=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${VTUND_SERVER}\" \"${DIR}${PROG}\" getData \"${tap}\" 9 1"`
+	if [[ $? -eq 0 ]]; then 
+		/bin/echo "${val}"
+	else 
+		/bin/echo 0
+	fi
+}
+
+# Check if child has the correct parent, otherwise kill child
+function checkForParent
+{
+    pid=0
+    statusline=`/etc/init.d/"${PROG}" status2`
+    if [[ $? -eq 0 ]]; then
+        pid=`/bin/echo "${statusline}" | /bin/awk '{print $1}'`
+        if [[ ! ${pid} -eq ${PPID} ]]; then 
+            # fix is running but is not parent of this child, something weird happened so kill this child
+            /bin/kill -9 $$ > /dev/null
+        fi
+    else # fix is not running, but this child exists, kill this child
+        /bin/kill -9 $$ > /dev/null
+    fi
+    return 0
+}
+
+
+########################## MAIN ##########################################
+
+
+# display USAGE
+if [[ $# -eq 1 && ( "${1}" == "-h" || "${1}" == "--help" ) ]]; then
+	printHelp
+	exit 0
+fi
+
+# read values from conf file
+if [[ -f "${CONF_FILE}" ]]; then
+	DIR="`/bin/grep '^DIRECTORY ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+	DELAY=`/bin/grep '^DELAY_BETWEENCHECK ' "${CONF_FILE}" | /bin/awk '{print $2}'`
+	DELAY_PARENTCHECK=`/bin/grep '^DELAY_PARENTCHECK ' "${CONF_FILE}" | /bin/awk '{print $2}'`
+	VTUND_SERVER="`/bin/grep '^SERVER ' "${CONF_FILE}" | /bin/awk '{print $2}'`" 
+	MACHINE="`/bin/grep '^MACHINE ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+	EMAIL="`/bin/grep '^EMAIL ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+	USER="`/bin/grep '^USER ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+else
+	/bin/echo "ERROR: ${CONF_FILE} not found."
+	exit 1
+fi
+
+# getData - from client call to check main trigger switch - $2=tap#
+if [[ $# -gt 0 && "${1}" == "getData" ]]; then
+    data_file="${DATA_FILE_PREFIX}${2}"
+    /bin/echo `getData ${3} ${4} "${data_file}"`
+    exit 0
+fi
+
+# needed so that bridge wont reset an unnecessary time when tap restarts
+if [[ $# -eq 2 && "${1}" == "resetTapNumbers" ]]; then
+	resetfile="${DATA_FILE_PREFIX}${2}"
+	if [[ -f "${resetfile}" ]]; then
+		/bin/sed -e "2s/^.*$/0 0 0 0/" -i "${resetfile}"
+		exit 0
+	fi
+	exit 1
+fi
+
+# Check user input
+if [[ "${1}" == "off" || "${1}" == "on" ]]; then
+    if [[ $# -eq 1 ]]; then
+        trigger "${1}"
+    elif [[ $# -eq 2 ]]; then
+        # $2 for specific TAP/VLAN checked for in trigger function
+        trigger "${1}" "${2}"
+    elif [[ "${3}" == "both" || "${3}" == "local" || "${3}" == "remote" ]]; then
+        if [[ $# -eq 3 ]]; then
+            # $2 checked for in trigger function
+            trigger "${1}" "${2}" "${3}"
+        elif [[ $# -eq 4 ]]; then
+            # $2 and $4 checked for in trigger function
+            trigger "${1}" "${2}" "${3}" "${4}"
+        else
+            printHelp
+            exit 1
+        fi
+    else
+        printHelp
+        exit 1
+    fi		
+
+	ret=$?
+	if [[ ${ret} -eq 0 ]]; then 
+		if [[ "${MACHINE}" == "client" ]]; then
+			/bin/echo "(${PROG} - client) Success!"
+		else
+			/bin/echo "(${PROG} - server) Success!"
+		fi
+	else 
+		if [[ "${MACHINE}" == "client" ]]; then
+			/bin/echo "(${PROG} - client) FAILED!"
+		else
+			/bin/echo "(${PROG} - server) FAILED!"
+		fi
+	fi
+	exit ${ret}
+fi
+
+# Parent start children
+if [[ $# -eq 1 && "${1}" == "startfix" ]]; then
+    i=0
+	# Get each tap line in CONF_FILE and start child
+    while read line; do
+        arg1=`/bin/echo ${line} | /bin/awk '{print $1}'`
+        arg2=`/bin/echo ${line} | /bin/awk '{print $2}'`
+		arg3=`/bin/echo ${line} | /bin/awk '{print $3}'`
+        arg4=`/bin/echo ${line} | /bin/awk '{print $4}'`
+        arg5=`/bin/echo ${line} | /bin/awk '{print $5}'`
+		if [[ "${MACHINE}" == "server" ]]; then
+			remoteIP="${arg3}"
+		else
+			remoteIP="${VTUND_SERVER}"
+		fi
+        "${0}" "child" "${arg1}" "${arg2}" "${remoteIP}" "${arg4}" "${arg5}" &
+        children[${i}]=$!
+        i=$(($i+1))
+    done < <(/bin/grep '^tap' "${CONF_FILE}")
+    /bin/sleep 5
+
+    # inf. loop to restart any dead children
+    while :; do
+        i=0
+        while read line; do
+            /bin/ps ${children[${i}]} | /bin/grep "${PROG}" > /dev/null
+            if [[ $? -gt 0 ]]; then
+		        arg1=`/bin/echo ${line} | /bin/awk '{print $1}'`
+		        arg2=`/bin/echo ${line} | /bin/awk '{print $2}'`
+				arg3=`/bin/echo ${line} | /bin/awk '{print $3}'`
+		        arg4=`/bin/echo ${line} | /bin/awk '{print $4}'`
+		        arg5=`/bin/echo ${line} | /bin/awk '{print $5}'`
+				if [[ "${MACHINE}" == "server" ]]; then
+					remoteIP="${arg3}"
+				else
+					remoteIP="${VTUND_SERVER}"
+				fi
+                "${0}" "child" "${arg1}" "${arg2}" "${remoteIP}" "${arg4}" "${arg5}" &
+                children[${i}]=$!
+            fi
+            i=$(($i+1))
+        done < <(/bin/grep '^tap' "${CONF_FILE}")
+        /bin/sleep "${DELAY_PARENTCHECK}"
+    done
+
+fi
+
+
+# Child, place arguments into global variables.
+if [[ $# -eq 6 && "${1}" == "child" ]]; then
+	tap="${2}"
+	tap_name="${3}"
+	tap_client_ip="${4}"
+	br="${5}"
+	vlan="${6}"
+	data_file="${DATA_FILE_PREFIX}${tap}"
+else
+	printHelp # if reached to this point, all other invalid inputs
+	exit 1
+fi
+
+
+if [[ "${MACHINE}" == "server" ]]; then
+	emailIP="${VTUND_SERVER}"
+else
+	emailIP="${tap_client_ip}"
+fi
+
+
+if [[ $# -eq 6 && "${1}" == "child" ]]
+then
+	_init
+
+	while :; do
+		tunEmail=0
+		checkForParent
+		
+		if [[ `checkTrue service` -eq 0 || ( "${MACHINE}" == "client" && `canCheckServer` -eq 0 ) ]]; then
+			if [[ `checkTrue service` -eq 0 ]]; then
+				log "`/bin/date` - Local client turned off checking for ${tap}. Sleeping ${DELAY}"
+			else
+				log "`/bin/date` - Server turned off checking for ${tap}. Sleeping ${DELAY}"
+			fi
+			/bin/sleep "${DELAY}"
+			continue
+		fi
+	
+		if [[ "${MACHINE}" == "client" && `checkTrue tap` -eq 1 ]]; then
+			isVtundProcessRunning
+			if [[ $? -eq 1 ]]; then
+				log "`/bin/date`   -   (${tap}) (${emailIP}) Tap process is not running, restarting tunnel." email
+				resetTap
+				tapret=$?
+				while [[ ${tapret} -gt 0 ]]; do 
+					/bin/sleep 10 
+					resetTap 
+					tapret=$?
+				done
+				/bin/sleep 30
+				continue
+			fi
+		fi
+		if [[ `checkTrue vlan` -eq 1 ]]; then
+			vlanExists
+			if [[ $? -gt 0 ]]; then
+				log "`/bin/date`   -   (${vlan}) Vlan is down, restarting Vlan interface."
+				resetVlan
+				/bin/sleep 10
+				continue
+			fi
+		fi
+
+		if [[ `checkTrue br` -eq 1 ]]; then
+			bridgeExists
+			if [[ $? -eq 1 ]]; then 
+				log "`/bin/date`   -   (${br}) Bridge is down, restarting bridge."
+				resetBridge
+				/bin/sleep 30
+				continue
+			fi
+		fi
+
+		if [[ "${MACHINE}" == "client" && `checkTrue tap` -eq 1 ]]; then
+			tapExists
+			if [[ $? -eq 1 ]]; then
+				log "`/bin/date`   -   (${tap}) (${emailIP}) Tap interface is down, restarting tunnel." email
+				resetTap; tapret=$?
+				while [[ ${tapret} -gt 0 ]]; do 
+					/bin/sleep 10 
+					resetTap 
+					tapret=$?
+				done
+				/bin/sleep 30
+				continue
+			fi
+		fi
+
+		# note, if not working, maybe not working because bridge is not working.
+		if [[ `checkTrue tap` -eq 1 ]]; then
+			tapWorking
+			returned=$?
+			if [[ ${returned} -eq 2 ]]; then
+				log "`/bin/date`   -  (${tap}) Unable to ssh into ${tapExists_IP} [2 Attempts], sleeping ${DELAY}"
+				# /etc/init.d/network restart
+				/bin/sleep "${DELAY}"
+			elif [[ ${returned} -gt 0 ]]; then
+				if [[ "${MACHINE}" == "server" ]]; then
+					log "`/bin/date`   -   (${tap}) Tunnel isn't working on SERVER, not checking bridge."
+					/bin/sleep "${DELAY}"
+					continue;
+				fi
+
+				log "`/bin/date`   -   (${tap}) (${emailIP}) Tunnel isn't working, restarting tunnel." email
+				tunEmail=1
+				resetTap; tapret=$?
+				while [[ ${tapret} -gt 0 ]]; do 
+					/bin/sleep 10 
+					resetTap 
+					tapret=$?
+				done
+				/bin/sleep 30
+				# continue
+			fi
+		fi
+
+		if [[ `checkTrue br` -eq 1 ]]; then
+			bridgeWorking
+			if [[ $? -eq 1 ]]; then
+				if [[ ${tunEmail} -eq 0 ]]; then
+					log "`/bin/date`   -   (${br}) (${emailIP}) Bridge isn't working, restarting bridge." email
+				else
+					log "`/bin/date`   -   (${br}) Bridge isn't working, restarting bridge."
+				fi
+				resetBridge
+				/bin/sleep 30
+				continue
+			fi
+		fi
+
+        if [[ "${MACHINE}" == "server" && `checkTrue listener` -eq 1 ]]; then
+            isListening
+            if [[ $? -eq 1 ]]; then
+                log "`/bin/date`   -   Vtund Listener is down, restarting"
+                /etc/init.d/vtund start > /dev/null  
+                /bin/sleep 30
+                continue
+            fi
+        fi
+	
+		/bin/sleep "${DELAY}"
+	done
+
+fi

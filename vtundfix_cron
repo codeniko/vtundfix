@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# Checks if parent needs to be restarted. Set cron for every 5 minutes or so.
+
+INIT="/etc/init.d/vtundfix"
+PID="/var/run/vtundfix.pid"
+LOCK="/var/lock/subsys/vtundfix"
+
+# if status2 returns as not running, but PID and LOCK files exist, then something weird happened to parent and we must restart vtundfix
+/etc/init.d/vtundfix status2 > /dev/null
+running=$?
+if [[ ${running} == 1 && -f "${PID}" && -f "${LOCK}" ]]; then
+	/etc/init.d/vtundfix restart
+fi

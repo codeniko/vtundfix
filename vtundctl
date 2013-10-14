@@ -1,0 +1,117 @@
+#!/bin/bash
+
+function printHelp
+{
+    /bin/echo "${0} Usage:"
+    /bin/echo "${0} <start|stop|restart|status>"
+    /bin/echo "${0} vtund <start|stop|restart|status>"
+	/usr/sbin/vtund help | /bin/grep -A 3 "Server:" | /bin/sed 's/vtund/vtundctl vtund/'
+    /bin/echo "${0} vtundfix <start|stop|restart|status>"
+    /bin/echo "${0} vtundfix <on|off> [SCOPE]"
+    /bin/echo "${0} vtundfix <on|off> <tap interface|vlan> [SCOPE]"
+    /bin/echo "${0} vtundfix <on|off> <tap interface|vlan> <SCOPE> [INTERFACE]"
+    /bin/echo "${0} vtundfix -h, --help"
+	/bin/echo "For more info, check out the man pages for \"vtund\" and \"vtundfix\""
+}
+
+function getArgsToPass
+{
+	for arg in "$@"; do
+		if [ "${arg}" == "${1}" ]; then continue; fi
+		argsToPass="${argsToPass} ${arg}"
+	done
+}
+
+function confirm # arg[1] contains confirm string
+{
+	/bin/echo -n "${1}"
+	/bin/echo -n " Enter y for yes: "
+	read inputline
+	if [ "${inputline}" == "y" ]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+getArgsToPass "$@"
+
+case "${1}" in
+  start)
+	if [ $# -gt 1 ]; then
+		printHelp
+		exit 1
+	fi
+	confirm "Are you sure you want to start VTUND and VTUNDFIX?"
+	if [ $? -eq 0 ]; then
+		/etc/init.d/vtund start
+		sleep 5
+		/etc/init.d/vtundfix start
+	else
+		/bin/echo "Cancelled"
+	fi
+	;;
+  stop)
+	if [ $# -gt 1 ]; then
+		printHelp
+		exit 1
+	fi
+	confirm "Are you sure you want to stop VTUND and VTUNDFIX?"
+	if [ $? -eq 0 ]; then
+		/etc/init.d/vtundfix stop
+		/etc/init.d/vtund stop # if server, stops listener, not active TAP interfaces
+		/etc/init.d/vtund status > /dev/null # get status to see if it was server and TAP interfaces are still up
+		if [ $? -eq 0 ]; then
+			/etc/init.d/vtund stop # stop active TAP interfaces
+		fi
+	else 
+		/bin/echo "Cancelled"
+	fi
+	;;
+  restart)
+	if [ $# -gt 1 ]; then
+		printHelp
+		exit 1
+	fi
+	confirm "Are you sure you want to restart VTUND and VTUNDFIX?"
+	if [ $? -eq 0 ]; then
+		/etc/init.d/vtundfix stop
+		/etc/init.d/vtund restart
+		sleep 5
+		/etc/init.d/vtundfix start
+	else
+		/bin/echo "Cancelled"
+	fi
+	;;
+  status)
+	if [ $# -gt 1 ]; then
+		printHelp
+		exit 1
+	fi
+	/etc/init.d/vtund status
+	/etc/init.d/vtundfix status
+	;;
+  vtund)
+	case "${2}" in
+	  start|stop|restart|status|reload|condrestart)
+		/etc/init.d/vtund ${argsToPass}
+		;;
+	  *)
+		/usr/sbin/vtund ${argsToPass}
+		;;
+	esac
+	;;
+  fix|vtundfix)
+	case "${2}" in
+	  start|stop|restart|status)
+		/etc/init.d/vtundfix ${argsToPass}
+		;;
+	  *)
+		/usr/sbin/vtundfix ${argsToPass}
+		;;
+	esac
+	;;
+  *)
+	printHelp
+	;;
+esac

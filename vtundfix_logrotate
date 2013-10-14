@@ -1,0 +1,9 @@
+/var/vtundfix/vtundfix.log {
+	missingok
+	notifempty
+	size 10M
+	compress
+	rotate 3
+	create 0660 root root
+}
+

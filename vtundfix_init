@@ -1,0 +1,185 @@
+#!/bin/sh
+#
+# vtundfix		Service fix for vtund connection
+#
+# chkconfig: 2345 20 80
+# description: Service fix for vtund connection
+#
+# processname: vtundfix
+# config: /usr/local/vtundfix/vtundfix.conf
+# pidfile: /var/run/vtundfix.pid
+
+ret=0
+DIR="/usr/local/vtundfix/"
+VAR_DIR="/var/vtundfix/"
+PROG="vtundfix"
+DESC="Fix for VTund"
+PIDFILE="/var/run/${PROG}.pid"
+LOCKFILE="/var/lock/subsys/${PROG}"
+CONF_FILE="${DIR}vtundfix.conf"
+DATA_FILE_PREFIX="${VAR_DIR}data_"
+
+function status2
+{
+	if [[ -f "${LOCKFILE}" && -f "${PIDFILE}" ]]; then
+		pid=`/bin/cat "${PIDFILE}"`
+        /bin/ps "${pid}" | /bin/grep "${PROG}" > /dev/null
+		return $?
+	else
+		return 1
+	fi
+}
+
+function status
+{
+	status2
+	if [[ $? -eq 0 ]]; then
+		/bin/grep -E -e '^tap[0-9]+' "${CONF_FILE}" | while read line; do
+			tap=`/bin/echo "${line}" | /bin/awk '{print $1}'`
+			client_ip=`/bin/echo "${line}" | /bin/awk '{print $3}'`
+            dataline=`/usr/bin/tail -n 1 "${DATA_FILE_PREFIX}${tap}"`
+            switchService=`/bin/echo ${dataline} | awk '{print $1}'`
+            switchVlan=`/bin/echo ${dataline} | awk '{print $2}'`
+            switchBridge=`/bin/echo ${dataline} | awk '{print $3}'`
+            switchTapOrListener=`/bin/echo ${dataline} | awk '{print $4}'`
+			if [[ "${MACHINE}" == "client" ]]; then
+				/bin/echo -n "Client (${tap}) - Currently active checks: "
+			elif [[ "${MACHINE}" == "server" ]]; then
+				/bin/echo -n "Server (${tap}) - Currently active checks: "
+			fi
+            if [[ ${switchService} -eq 1 ]]; then /bin/echo -n "service "; fi
+            if [[ ${switchVlan} -eq 1 ]]; then /bin/echo -n "vlan "; fi
+            if [[ ${switchBridge} -eq 1 ]]; then /bin/echo -n "bridge "; fi
+            if [[ ${switchTapOrListener} -eq 1 && "${MACHINE}" == "client" ]]; then 
+				/bin/echo -n "tap "
+			elif [[ ${switchTapOrListener} -eq 1 && "${MACHINE}" == "server" ]]; then
+				/bin/echo -n "listener "
+			fi
+            /bin/echo "" # break line
+			if [[ "${MACHINE}" == "client" ]]; then
+				dataline=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${SERVER}\" /usr/bin/tail -n 1 \"${DATA_FILE_PREFIX}${tap}\" < /dev/null"`
+			elif [[ "${MACHINE}" == "server" ]]; then
+				dataline=`/bin/su - "${USER}" -c "/usr/bin/ssh \"${USER}\"@\"${client_ip}\" /usr/bin/tail -n 1 \"${DATA_FILE_PREFIX}${tap}\" < /dev/null"`
+			fi
+            switchService=`/bin/echo ${dataline} | awk '{print $1}'`
+            switchVlan=`/bin/echo ${dataline} | awk '{print $2}'`
+            switchBridge=`/bin/echo ${dataline} | awk '{print $3}'`
+            switchTapOrListener=`/bin/echo ${dataline} | awk '{print $4}'`
+			if [[ "${MACHINE}" == "client" ]]; then
+				/bin/echo -n "Server (${tap}) - Currently active checks: "
+			elif [[ "${MACHINE}" == "server" ]]; then
+				/bin/echo -n "Client (${tap}) - Currently active checks: "
+			fi
+            if [[ ${switchService} -eq 1 ]]; then /bin/echo -n "service "; fi
+            if [[ ${switchVlan} -eq 1 ]]; then /bin/echo -n "vlan "; fi
+            if [[ ${switchBridge} -eq 1 ]]; then /bin/echo -n "bridge "; fi
+            if [[ ${switchTapOrListener} -eq 1 && "${MACHINE}" == "client" ]]; then 
+				/bin/echo -n "listener "
+			elif [[ ${switchTapOrListener} -eq 1 && "${MACHINE}" == "server" ]]; then
+				/bin/echo -n "tap "
+			fi
+            /bin/echo "" # break line
+		done
+		return 0
+	else
+		return 1
+	fi
+}
+
+function start
+{
+	status2
+	if [[ $? -eq 0 ]]; then
+		pid=`/bin/cat "${PIDFILE}"`
+		/bin/echo "(${pid}) ${PROG} is already running."
+		return 0
+	fi
+
+    /bin/echo -n "Starting ${DESC} (${PROG}): "
+	"${DIR}${PROG}" startfix &
+	pid=$!
+    retval=$?
+        
+    if [[ ${retval} -eq 0 ]]; then
+		/bin/touch "${LOCKFILE}"
+		/bin/echo "${pid}" > "${PIDFILE}"
+		/bin/echo "DONE (${pid})"
+	else
+		/bin/echo "FAILED"
+    fi
+
+	return ${retval}
+}
+
+function stop
+{
+	status2
+	if [[ $? -eq 1 ]]; then
+		/bin/echo "${PROG} is not running."
+		return 0
+	fi
+
+    /bin/echo -n "Shutting down ${DESC} (${PROG}): "
+	pid=`/bin/cat "${PIDFILE}"`
+	/usr/bin/pkill -TERM -P "${pid}" > /dev/null
+	/bin/kill -TERM "${pid}" > /dev/null
+	retval=$?
+	/bin/echo "DONE"
+	/bin/rm -f "${PIDFILE}"
+	/bin/rm -f "${LOCKFILE}"
+	"${DIR}${PROG}" off local
+	return ${retval}
+}
+
+
+if [[ -f "${CONF_FILE}" ]]; then
+    SERVER="`/bin/grep '^SERVER ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+    MACHINE="`/bin/grep '^MACHINE ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+    USER="`/bin/grep '^USER ' "${CONF_FILE}" | /bin/awk '{print $2}'`"
+else
+    /bin/echo "ERROR: ${CONF_FILE} not found."
+    exit 1
+fi
+
+
+ret=0
+case "${1}" in
+#    and allows to shape, compress, encrypt traffic in that tunnels.
+  start)
+    start
+	ret=$?
+    ;;
+  stop)
+    stop
+	ret=$?
+    ;;
+  restart)
+    stop
+	start
+	ret=$?
+    ;;
+  status2) # called from within script
+	status2
+	ret=$?
+	if [[ ${ret} -eq 0 ]]; then 
+		/bin/echo "`/bin/cat ${PIDFILE}` - ${PROG} is running."
+	else 
+		/bin/echo "${PROG} is not running."
+	fi
+    ;;
+  status) # main status
+	status
+	ret=$?
+	if [[ ${ret} -eq 0 ]]; then 
+		/bin/echo "`/bin/cat ${PIDFILE}` - ${PROG} is running."
+	else 
+		/bin/echo "${PROG} is not running."
+	fi
+    ;;
+  *)
+    /bin/echo "Usage: ${0} {start|stop|restart|status}"
+	ret=1
+	;;
+esac
+
+exit ${ret}

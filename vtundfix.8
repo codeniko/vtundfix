@@ -1,0 +1,160 @@
+.\" Manpage for vtundfix
+.\" Process with groff -man -Tascii vtundfix.8
+.TH VTUNDFIX 8 "29 August, 2013" "1.0" "vtundfix man page"
+.SH NAME
+vtundfix \- restart vtund and other interfaces to keep tunnels open
+.SH SYNOPSIS
+.B vtundfix 
+-h, --help ---- Display quick usage
+.IP "Turn on/off checks for all TAP interfaces"
+.B vtundfix
+on 
+.I [SCOPE]
+.br
+.B vtundfix
+off
+.I [SCOPE]
+.IP "Turn on/off checks for a specific TAP interface"
+.B vtundfix 
+on
+.I tap<#> [SCOPE]
+.br
+.B vtundfix 
+on 
+.I tap<#> <SCOPE> [INTERFACE]
+.br
+.B vtundfix 
+off
+.I  tap<#> [SCOPE]
+.br
+.B vtundfix 
+off
+.I tap<#> <SCOPE> [INTERFACE]
+.IP "Turn on/off checks for a specific VLAN interface"
+.B vtundfix 
+on
+.I vlan<#> [SCOPE] 
+.br
+.B vtundfix 
+on 
+.I vlan<#> <SCOPE> [INTERFACE]
+.br
+.B vtundfix 
+off
+.I vlan<#> [SCOPE] 
+.br
+.B vtundfix 
+off
+.I vlan<#> <SCOPE> [INTERFACE]
+.SH DESCRIPTION
+vtundfix is a daemon to keep Vtund up and running. If Vtund or any interface associated with Vtund fails, vtundfix will restart it to fix the tunnel. 
+
+When configuring vtundfix, specify if the current machine is a server or client
+by setting the 
+.B MACHINE
+variable to either
+.B server
+or
+.B client
+in 
+.I vtundfix.conf.
+
+List of things checked by vtundfix (in order):
+.RS
+.br
+Is VTund process running 
+.br
+Does VLAN interface exist 
+.br
+Does TAP interface exist 
+.br
+Does bridge exist 
+.br
+Is TAP working
+.br
+Is bridge working
+.SH ARGUMENTS
+.TP 
+.I tap<#>
+Replace <#> with a number. Specify what tap interface to perform on. 
+.TP 
+.I vlan<#>
+Replace <#> with a vlan tag. Specify what vlan interface to perform on. 
+.TP
+.I SCOPE
+Specify if command is 
+.B local
+, 
+.B remote
+, or 
+.B both. 
+Local affects only the machine in which the script is being executed. Remote affects the appropriate remote machine. The script checks the Conf file to determine what TAP interface to connect to which machine.
+.B Default is "both".
+.TP
+.I INTERFACE
+Specific interface to modify check for. Valid inputs are "service", "tap", "vlan", "bridge", "br", "listener", "all". Default is "all".
+.PP
+.RS
+.I service
+- Main control. If this is off, the script will not bother checking any of the other interfaces, even if they are on.
+.br
+.I tap 
+- If on, script checks if TAP interface is working.
+.br
+.I vlan 
+- If on, script checks if VLAN interface is working.
+.br
+.I bridge|br 
+- If on, script checks if bridge interface is working.
+.br
+.I listener 
+- If on, script checks if Vtund process on server is running and is listening for connections
+.br
+.I "all" 
+- 
+.B DEFAULT
+- turns on/off all interface checks
+
+                 
+.SH FILES
+.I "/usr/local/vtundfix/vtundfix.conf"
+.RS
+The configuration file for Vtundfix. Should be linked from 
+.I /etc/vtundfix.conf.
+.RE
+.I "/usr/local/vtundfix/vtundfix_init"
+.RS
+The init script. Should be linked from 
+.I /etc/init.d/vtundfix.
+.RE
+.I "/usr/local/vtundfix/vtundfix"
+.RS
+The main script for vtundfix. Should be linked from
+.I /usr/sbin/vtundfix.
+.RE
+.I "/usr/local/vtundfix/vtundctl"
+.RS
+The control script which merges vtundfix and vtund. Should be linked from
+.I "/usr/sbin/vtundctl"
+.RE
+.I "/var/vtundfix/vtundfix.log"
+.RS
+The log file
+.RE
+.I "/usr/local/vtundfix/vtundfix_cron"
+.RS
+The cron file that makes sure the vtundfix daemon is running as it's supposed to. Should be linked from
+.I "/etc/cron.d/vtundfix"
+.RE
+.I "/usr/local/vtundfix/vtundfix_logrotate"
+.RS
+The logrotate file. Should be linked from
+.I "/etc/logrotate.d/vtundfix"
+.RE
+.I "/var/vtundfix/data_tap#"
+.RS
+Internal data file for vtundfix to function properly. Contains previosly recorded TX/RX packets for TAP and VLAN Interfaces. 
+.SH SEE ALSO
+vtund(8)
+.SH AUTHOR
+Nikolay Feldman (nf139@cs.rutgers.edu, niko@codeniko.net)
