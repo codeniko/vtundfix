@@ -51,10 +51,10 @@ EMAIL - The e-mail address to send a notification to when the TAP interface has 
 e-mail is only sent if it is related to the TAP interface. This excludes bridge or process problems.
 </pre>
 
-=== TAP Interface Configuration ===
+###TAP Interface Configuration
 The format for configuring the TAP interfaces at the bottom of the configuration file is as follows.
 <pre>
-<tap> <tunnel/session name> <client ip> <bridge> <vlan for bridge>
+&lt;tap&gt; &lt;tunnel/session name&gt; &lt;client ip&gt; &lt;bridge&gt; &lt;vlan for bridge&gt;
 </pre>
 The following are examples. Each new TAP configuration should be on a separate line.
 <pre>
@@ -76,7 +76,7 @@ lcsr {
 }
 </pre>
 
-=== Setup SSH Authentication with Keys ===
+###Setup SSH Authentication with Keys
 In order for Vtundfix to work, create the *vtundfix* user on each machine and set it up to SSH into the *vtundfix* user on the other machine without the password prompt. Do the following commands on both machines
 
 Create the *vtundfix* user and maybe send the password:
