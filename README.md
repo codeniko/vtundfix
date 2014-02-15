@@ -1,5 +1,5 @@
 #Vtundfix / Vtundctl
-Vtundfix is a daemon written in bash to keep Vtund up and running. Occasionally, the tunnel between Rutgers LCSR and CBIM would go down for an unknown reason and would require a manual restart. Vtundfix is a general solution which detects if any component of the tunnel (bridge/vlan/tap interfaces, processes) is not working, and fixes the problem that is detected. 
+Vtundfix is a service written in bash to keep Vtund up and running. Occasionally, the tunnel between Rutgers LCSR and CBIM would go down for an unknown reason and would require a manual restart. Vtundfix is a general solution which detects if any component of the tunnel (bridge/vlan/tap interfaces, processes) is not working, and fixes the problem that is detected. 
 
 Vtundctl is a control script that merges the commands and init commands of Vtund and Vtundfix. Usage of Vtundctl can be found in subsection **Using Vtundfix and Vtundctl**.
 
