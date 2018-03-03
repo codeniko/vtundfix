@@ -1,14 +1,14 @@
-#Vtundfix / Vtundctl
+# Vtundfix / Vtundctl
 Vtundfix is a service written in bash to keep Vtund up and running. Occasionally, the tunnel between Rutgers LCSR and CBIM would go down for an unknown reason and would require a manual restart. Vtundfix is a general solution which detects if any component of the tunnel (bridge/vlan/tap interfaces, processes) is not working, and fixes the problem that is detected. 
 
 Vtundctl is a control script that merges the commands and init commands of Vtund and Vtundfix. Usage of Vtundctl can be found in subsection **Using Vtundfix and Vtundctl**.
 
 
-##Installation
+## Installation
 Vtundfix needs to be installed on both the Vtund server and client machines. Download or pull a copy of this repo and just run make. `make install` will put all of the files in the correct locations.
 > make install
 
-##Configuration
+## Configuration
 Vtundfix configuration. Here are the contents of the template file:
 > cat /etc/vtundfix.conf
 
@@ -26,7 +26,7 @@ tap0 lcsr 192.168.1.100 br0 eth0.763
 tap1 lcsr2 192.168.1.101 br1 eth0.764
 </pre>
 
-###General Settings
+### General Settings
 
 Here is a description of all the settings:
 <pre>
@@ -51,7 +51,7 @@ EMAIL - The e-mail address to send a notification to when the TAP interface has 
 e-mail is only sent if it is related to the TAP interface. This excludes bridge or process problems.
 </pre>
 
-###TAP Interface Configuration
+### TAP Interface Configuration
 The format for configuring the TAP interfaces at the bottom of the configuration file is as follows.
 <pre>
 &lt;tap&gt; &lt;tunnel/session name&gt; &lt;client ip&gt; &lt;bridge&gt; &lt;vlan for bridge&gt;
@@ -76,7 +76,7 @@ lcsr {
 }
 </pre>
 
-###Setup SSH Authentication with Keys
+### Setup SSH Authentication with Keys
 In order for Vtundfix to work, create the *vtundfix* user on each machine and set it up to SSH into the *vtundfix* user on the other machine without the password prompt. Do the following commands on both machines
 
 Create the *vtundfix* user and maybe send the password:
@@ -107,7 +107,7 @@ PubkeyAuthentication yes
 Finally, restart the SSH service:
 > /etc/init.d/sshd restart
 
-##Setup Cron
+## Setup Cron
 If a linux machine can't start any new processes because there are too many processes running, processes start to die randomly. If the parent process of Vtundfix is ever killed, the children die and there will be nothing to check and make sure that the Vtund tunnels are up and running. Vtundfix comes with a small script, **/usr/local/vtundfix/vtundfix_cron**, that restarts Vtundfix if it *should* be running. Although this step might seem optional, it is recommended for the longevity of the program.
 
 The cron script is by default already set up when you untar *vtundfix.tgz* and the script is set to run every 5 minutes. When you untar, you should restart the cron daemon.
@@ -116,7 +116,7 @@ The cron script is by default already set up when you untar *vtundfix.tgz* and t
 
 If you want to change how often the script runs or remove it, the crontab file is located in **/usr/local/vtundfix/vtundfix_crontab** and is linked from **/etc/cron.d/vtundfix**
 
-##Using Vtundfix and Vtundctl
+## Using Vtundfix and Vtundctl
 This section will show you the basic commands. To get more specific information on Vtundfix commands, take a look at `man vtundfix`
 
 **Starting Vtundfix** <br>
@@ -138,7 +138,7 @@ Vtundctl merges the commands for Vtund and Vtundfix, along with their init scrip
 Here is an example of calling a command for **Vtund** through Vtundctl and what it does:
 > vtundctl vtund lcsr 192.168.1.100  # *start Vtund client process that will attempt to connect to Vtund server*
 
-##Inside Vtundfix (How it works)
+## Inside Vtundfix (How it works)
 This section will cover how Vtundfix works on the inside incase changes need to be made or something weird is happening.
 
 **NOTE** Vtundfix requires the ability to SSH to **server <---> client** as the *vtundfix* user in both directions and with an SSH authentication key (there should be no password prompt). The client and server require data from each other to function correctly.
@@ -165,7 +165,7 @@ Checking if the Bridge exists is done as follows. First, check if the actual int
 
 To determine if the TAP interfaces are working and data is actually flowing through the tunnel, Vtundfix checks the TX/RX packet counts that can be found when running *ifconfig*. Both the vtundfix client and server check these numbers both locally, and on the remote server. A copy of these numbers is then stored in the data files for each TAP interface to be used as the *previous* numbers to compare to. The idea behind Vtundfix is: if a packet was sent from one end and increased the TX count, then the RX count on the reciever should increase. It has been decided that the TAP interface is considered **NOT** working if data is not flowing through both directions of the tunnel. In other words, The tunnel is considered working if the TX/RX count increases on any side within *two* Vtundfix checks (delayed by the setting in the configuration file). There is a difference in how the client performs and how the server performs if there is an issue. When an issue rises, the client will restart the tunnel, but the server will simply ignore it and NOT check the bridge (the bridge will show up *broken* in this case, and this avoids an unnecessary restart).
 
-##Files Associated With Vtundfix
+## Files Associated With Vtundfix
 /usr/local/vtundfix/vtundfix.conf
 <pre>The  configuration  file  for  Vtundfix.  Should  be linked from /etc/vtundfix.conf.</pre>
 /usr/local/vtundfix/vtundfix_init
@@ -185,7 +185,7 @@ To determine if the TAP interfaces are working and data is actually flowing thro
 /var/run/vtundfix.pid
 <pre>The PID file for vtundfix.</pre>
 
-##Tunnel Notes
+## Tunnel Notes
 Vtund client triggers connection to server. When you start a client, a connector process is created that attempts to connect to the server every couple of seconds. When the server is started, a process is created that only listens for incoming client connections. Once a connection is triggered by the client and the connection becomes active, the TAP interface is created. The server will also spawn a new process that looks similar to the process in the client, which has a description of the connection. The only difference is if the connection ever goes goes down, the server's TAP process dies, but the client's process attempts to re-establish a connection again.
 
 When a connection is established, there is about a 16-18 packet handshake that Vtund does before traffic can actually flow through the tunnel.
